@@ -1,0 +1,543 @@
+---
+title: "ELLIS – PhD position applicant 2022"
+author: "Artur Lourenço"
+date: '2022-02-8'
+output:
+  html_document: default
+  pdf_document: default
+subtitle: Work sample as support material
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# gc(TRUE) 
+# rm(list = ls()) 
+# # dev.off() 
+# cat("\014") 
+# Sys.setlocale(locale = "Portuguese")
+
+```
+
+```{r packages, include=FALSE}
+
+list.of.packages <-
+  c(
+    "colorRamps",
+    "ggplot2",
+    "zoo",
+    "RColorBrewer",
+    "ggrepel",
+    "sf",
+    "rgeos",
+    "ggforce",
+    "scales",
+    "lubridate",
+    "tidyverse",
+    "patchwork",
+    "rayshader",
+    "bigleaf",
+    "timeDate",
+    "corrplot",
+    "leaflet",
+    "ggpmisc",
+    "neuralnet"
+    
+  ) # lista de pacotes utilizados
+
+new.packages <-
+  list.of.packages[!(list.of.packages %in% installed.packages()[, "Package"])] # checar se h? algum pacote novo
+
+if (length(new.packages))
+  install.packages(new.packages) # instala os pacotes novos
+
+lapply(list.of.packages, library, character.only = TRUE) # carrega os pacotes necess?rios
+
+setwd("G:\\My Drive\\Phd\\MPI\\ELLIS\\Work Sample") #define a pasta de trabalho
+
+load('majadas_dataset.RData')
+
+```
+
+
+```{r imprs, echo = FALSE}
+knitr::include_graphics("ellis_visual.png")
+```
+
+## 1 Introduction
+
+This work sample aims to demonstrate the set of skills and prior knowledge that allow the development of a doctoral study under the supervision of researchers who are part of the Department Biogeochemical Integration at the Max Planck Institute for Biogeochemistry (MPI-BG\\BGI).
+
+The main point is to show that I have a certain understanding of the type of environmental data used in MPI-BG\\BGI. To this end, real data were used (with permission) from an experimental site managed by the institute.
+
+## 2 Data 
+
+Two datasets of real data were used from the experimental site 'Majadas del Tietar' in 2018 and 2019. The variables present in the datasets are:
+
+**'daily' dataset:**
+
+date: date of observation in daily scale.  
+Cam_NDVI_G: NDVI for the herbaceous layer ('grass').  
+Cam_NDVI_T: NDVI for the oak trees.
+
+**'HHly' dataset:**
+
+rDate: half-hourly timestamp of the observation.  
+daytime: a binary flag 0/1 for 'night' and 'day'.  
+GPP: Gross primary productivity (micromol co2 m-2 s-1).  
+ET : Evapotranspiration (mm hour-1).
+
+Samples of the datasets:
+
+```{r tables ,echo = FALSE }
+
+knitr::kable(
+  list(
+    head(HHly, 10),
+    head(daily, 10)
+  ),
+  caption = 'Samples of the datasets.', booktabs = TRUE
+)
+
+```
+
+## 3 Study Site
+
+The study site is a mixed tree-grass 'dehesa' semi-arid ecosystem in Spain. The area has a low density tree cover. The semiarid climate in this region is characterized by cold winters and long dry summers, with periodic severe droughts [1]. The location of the study site is shown on the interactive map below.
+
+```{r map, echo=FALSE}
+
+MajadasStation<- data.frame(lat=39.934583, long=-5.775889, name= "Majadas del Tietar Station\nlong= -5.775889 lat =39.934583") # from http://www.europe-fluxdata.eu/home/site-details?id=ES-LM2
+
+leaflet(data = MajadasStation) %>%
+  addTiles() %>%
+  addProviderTiles(providers$Esri.WorldImagery) %>%
+  addMarkers(~long, ~lat, popup = ~as.character(name), label = ~as.character(name),group = "Majadas del Tietar South") %>% 
+  addLayersControl(
+    overlayGroups = c("Majadas del Tietar South"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>% 
+  addMiniMap() %>% 
+  setView(-5.775889, 39.934583, zoom = 18)
+
+```
+
+## 3 Data pre-processing
+
+It was performed the pre-processing and exploration of the datasets to understand its structure and contents.
+
+```{r nacount, echo=FALSE}
+
+HHly_na_count <-  HHly %>%
+  summarise(across(everything(), ~ sum(is.na(.))))  
+  # pivot_longer(!rDate, names_to = "variable", values_to = "value")
+
+daily_na_count <-  daily %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) 
+# pivot_longer(!date, names_to = "variable", values_to = "value")
+
+knitr::kable(
+  list(
+    HHly_na_count,
+    daily_na_count
+  ),
+  caption = 'Number of NA values in the variables', booktabs = TRUE
+)
+
+```
+The NA values of `daytime` and `ET` variables are equivalent to 7.5% and 24.6% of the total, respectively. 
+
+Are there any missing dates in the time series?
+
+```{r dates_miss, echo=TRUE}
+
+# For the HHly data.frame
+
+length(HHly$rDate) != length(seq(as.POSIXct(first(HHly$rDate)), as.POSIXct(last(HHly$rDate)), by=30*60))
+
+# For the daily data.frame
+
+length(daily$date) != length(seq(as.Date(first(daily$date)), as.Date(last(daily$date)), by='day'))
+
+```
+<div class="alert alert-warning">
+  <strong>Note!</strong> During the pre-processing of the 'daytime' variable, values that were not consistent with the time of day were found (e.g. 1 for 00:00).
+</div>
+
+## 4 Half-hourly GPP and ET Behavior
+
+Graphs were produced to visualize the behavior of the GPP and ET variables on the half-hourly scale.
+
+```{r half_hourly, fig.width=9, fig.height=10, echo=FALSE, warning=FALSE}
+
+HHly_longer <-  HHly %>%
+  select(-daytime) %>% 
+  pivot_longer(!rDate, names_to = "variable", values_to = "value")
+
+fill_labels <- setNames(c("Evapotranspiration", "Gross Primary Productivity", "Water Use Efficiency", 
+                          "Gross Primary Productivity","NDVI Trees","NDVI Grass"),
+                        c("ET", "GPP", "WUE","GPP_gC","Cam_NDVI_T","Cam_NDVI_G"))
+
+ggplot(HHly_longer, aes(x = rDate, y = value, group = variable, col = variable)) +
+  geom_line() +
+  labs(
+    title = "Gross Primary Production and Evapotranspiration Variation at Half-hourly Scale",
+    subtitle = "Series 2018-2019 from the experimental site Majadas del Tietar",
+    y = "",
+    x = "Half-hourly",
+    caption = "Data Source: MPI-BG\\BGI."
+  ) +  # title and caption
+  scale_color_discrete(name = 'Variables', labels = fill_labels) +
+  theme_bw() + 
+  facet_wrap(~ variable, scales = "free_y",ncol = 1,  strip.position = "left", 
+             labeller = as_labeller(c(ET = "ET (kg H2O m-2 hour-1)", GPP = "GPP (micromol CO2 m-2 s-1)") ) )  +
+  ylab(NULL) +
+  theme(strip.background = element_blank(), strip.placement = "outside")
+
+```
+
+Both ET and GPP were not consistent over the two years of the time series studied, showing high seasonal variation, but not interannual.
+
+The half-hourly mean, max and min values for GPP and ET variables of the entire serie was calculated.
+
+```{r half_hourly_mean, fig.width=9, fig.height=10, echo=FALSE}
+
+HHly_mean <-  HHly %>%
+  select(-daytime) %>% 
+  group_by(rDate = format(rDate, "%H:%M")) %>%  # group by the day
+  summarise(across(everything(), .f = list(mean = mean, max = max, min = min), na.rm = TRUE)) %>%
+  pivot_longer(!rDate, names_to = "variable", values_to = "value") %>% 
+  mutate(group = if_else(str_match(variable,"GPP") == "GPP","GPP","ET",missing = "ET"))
+
+ggplot(HHly_mean, aes(x = rDate, y = value, group = group, col = variable)) +
+  geom_point() +
+  labs(
+    title = "Half-hourly Mean, Max and Min Variation of GPP and ET",
+    subtitle = "Series 2018-2019",
+    y = "GPP (micromol CO2 m-2 s-1)",
+    x = "Half-hourly",
+    caption = "Data Source: MPI-BG\\BGI."
+  ) +  # title and caption
+  scale_x_discrete(breaks = unique(HHly_mean$rDate)[seq(1,48,4)]) +
+  scale_color_discrete(name = 'Variables') +
+  theme_bw() + 
+  facet_wrap(~ group,scales = "free_y",ncol = 1,  strip.position = "left", 
+             labeller = as_labeller(c(ET = "ET (kg H2O m-2 hour-1)", GPP = "GPP (micromol CO2 m-2 s-1)") ) )  +
+  ylab(NULL) +
+  theme(strip.background = element_blank(), strip.placement = "outside")
+
+
+```
+
+GPP and ET showed similar behaviors but with slightly different peak hours. Considering the calculated means, the highest values of GPP are found at 12:00 as compared to 13:30 for ET. Linear regression showed high correlation between the GPP and ET both on days in the wet and dry season. 
+
+```{r linear_reg, echo=FALSE, warning=FALSE}
+
+l1<- ggplot(data = HHly %>% filter(rDate >= "2019-05-08 00:00:00" & rDate <= "2019-05-08 23:30:00")
+       , aes(x = ET, y = GPP)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=FALSE, color="black", formula = y ~ x) +
+  stat_poly_eq(formula = y ~ x, 
+               aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+               parse = TRUE) +
+  labs(
+    title = "Linear Regression for a Day in the Rainy Season",
+    # subtitle = "",
+    y = "GPP (mmol H2O m-2 s-1)",
+    x = "ET (mm hour-1)",
+    caption = "Data Source: MPI-BG\\BGI."
+  ) +
+  theme_bw() 
+
+l2<- ggplot(data = HHly %>% filter(rDate >= "2019-03-12 00:00:00" & rDate <= "2019-03-12 23:30:00")
+       , aes(x = ET, y = GPP)) +
+  geom_point() +
+  geom_smooth(method = "lm", se=FALSE, color="black", formula = y ~ x) +
+  stat_poly_eq(formula = y ~ x, 
+               aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+               parse = TRUE) +
+  labs(
+    title = "Linear Regression for a Day in the Dry Season",
+    # subtitle = "",
+    y = "GPP (mmol H2O m-2 s-1)",
+    x = "ET (mm hour-1)",
+    caption = "Data Source: MPI-BG\\BGI."
+  ) +
+  theme_bw() 
+
+l1 + l2 + plot_layout(nrow = 1)
+
+```
+
+
+## 5 Daily GPP and ET Variation and Water-Use Efficiency Calculation
+
+GPP and ET data were converted to daily scale. Functions from the `bigleaf` package were used to perform the conversion to gC m−2 day−1. ET data were also converted to kg H2O m-2 day-1. These operations were performed in order to calculate the Water-Use Efficiency (WUE = GPP/ET) in g C kg H2O−1 time-1.
+
+```{r daily_data, fig.width=9, fig.height=10, echo=FALSE}
+
+GPP_to_daily <-  HHly %>%
+  # replace_na(list(ET = 0)) %>%
+  group_by(rDate_d = as.Date(format(rDate, "%Y-%m-%d"))) %>% # group by the day
+  summarise_at(c("GPP"), mean, na.rm = TRUE) %>% # calc the mean for all day long observations
+  mutate(GPP_gC =  umolCO2.to.gC(GPP))# convert to gC m-2 day-1 (* 10^-6 * 12 * 86400) or umolCO2.to.gC() 
+
+ET_to_daily<- HHly %>% 
+  replace_na(list(ET = 0)) %>%
+  mutate(ET = replace(ET, ET < 0, 0)) %>%
+  group_by(rDate_d = as.Date(format(rDate, "%Y-%m-%d"))) %>% # group by the day
+  summarise_at(c("ET"), sum, na.rm = TRUE) %>% # calc the mean for all day long observations
+  mutate(ET = ET/2) 
+
+GPP_ET_WUE<- GPP_to_daily %>% 
+  left_join(.,ET_to_daily,by = c("rDate_d" = "rDate_d")) %>% 
+  mutate(WUE = GPP_gC/ET) %>%
+  select(-GPP) %>% 
+  pivot_longer(!rDate_d, names_to = "variable", values_to = "value")
+
+ggplot(GPP_ET_WUE, aes(x = rDate_d, y = value, col = variable)) +
+  geom_line() +
+  labs(
+    title = "Gross Primary Production and Evapotranspiration Variation at Half-hourly Scale",
+    subtitle = "Series 2018-2019 from the experimental site Majadas del Tietar",
+    y = "GPP (mmol H2O m-2 s-1)",
+    x = "Half-hourly",
+    caption = "Data Source: MPI-BG\\BGI."
+  ) +  # title and caption
+  # scale_x_discrete(breaks = unique(HHly_to_diurnal$rDate)[seq(1,48,4)]) +
+  # scale_color_gradientn(colours = rev(matlab.like2(5)), name = 'GPP') +
+  scale_color_discrete(name = 'Variables', labels = fill_labels) +
+  theme_bw() + 
+  facet_wrap(~ variable,scales = "free_y",ncol = 1,  strip.position = "left", 
+             labeller = as_labeller(c(ET = "ET (kg H2O m-2 hour-1)", GPP_gC = "GPP (gC m−2 day−1)", 
+                                    WUE = "WUE (gC kg H2O−1 m-1)") ) ) +
+  ylab(NULL) +
+  theme(strip.background = element_blank(), strip.placement = "outside")
+
+```
+
+Due to the number of flaws present in the ET variable (about 25% of the total observations), the daily values calculated for the WUE present some distortions. Filtering, refining and gap filling techniques must be employed in this situation. A simple removal of data considered as 'outliers' was performed considering points below of [Q1-(1.5)IQR] and above of [Q3+(1.5)IQR].
+
+<div class="alert alert-warning">
+  <strong>Note!</strong> Data considered as 'ouliers' were removed only to improve the visualization of the WUE variable in the daily scale. For the other analyses, all data were considered.
+</div>
+
+```{r out, echo=FALSE, fig.height=10, fig.width=9}
+WUE_out<- GPP_to_daily %>% 
+  left_join(.,ET_to_daily,by = c("rDate_d" = "rDate_d")) %>% 
+  mutate(WUE = GPP_gC/ET)
+
+out <- boxplot(WUE_out$WUE, plot=FALSE)$out
+WUE_out<- WUE_out[-which(WUE_out$WUE %in% out),]
+WUE_out_long<- WUE_out %>% 
+  select(-GPP) %>% 
+  pivot_longer(!rDate_d, names_to = "variable", values_to = "value")
+  
+ggplot(WUE_out_long, aes(x = rDate_d, y = value, col = variable)) +
+  geom_line() +
+  labs(
+    title = "Gross Primary Production and Evapotranspiration Variation at Half-hourly Scale",
+    subtitle = "Serie 2018-2019 from the experimental site Majadas del Tietar",
+    y = "GPP (mmol H2O m-2 s-1)",
+    x = "Half-hourly",
+    caption = "Data Source: MPI-BG\\BGI."
+  ) +  # title and caption
+  # scale_x_discrete(breaks = unique(HHly_to_diurnal$rDate)[seq(1,48,4)]) +
+  # scale_color_gradientn(colours = rev(matlab.like2(5)), name = 'GPP') +
+  scale_color_discrete(name = 'Variables', labels = fill_labels) +
+  theme_bw() + 
+  facet_wrap(~ variable,scales = "free_y",ncol = 1,  strip.position = "left", 
+             labeller = as_labeller(c(ET = "ET (kg H2O m-2 hour-1)", GPP_gC = "GPP (gC m−2 day−1)", 
+                                      WUE = "WUE (gC kg H2O−1 m-1)") ) ) +
+  ylab(NULL) +
+  theme(strip.background = element_blank(), strip.placement = "outside")
+
+```
+
+
+## 6 Monthly GPP, ET and Water-Use Efficiency Variation
+
+The figure below shows the behavior of the GPP, ET and WUE variables on the monthly scale. It is possible to notice more clearly the seasonal dynamics of the GPP and ET. The WUE presents the highest values in the months where there is a lower influx of carbon into the ecosystem (i.e. low GPP values) and certainly less water avaibility. During this period, vegetation, for example, will use the most efficient water to try to assimilate the same carbon rates.
+
+```{r monthly, fig.width=9, fig.height=10,echo=FALSE}
+
+m_abb<- data.frame(m=1:12,abb=month.abb)
+
+GPP_to_monthly <-  GPP_to_daily %>%
+  group_by(rDate_m = format(rDate_d, "%Y-%m")) %>% # group by month
+  summarise_at(c("GPP_gC"), mean, na.rm = TRUE) %>% # calc the mean for all days in a month
+  mutate(date=as.Date.character(timeLastDayInMonth(paste(rDate_m,'01',sep = "-")))) %>% 
+  mutate(GPP_gC = GPP_gC * as.integer(format(date, "%d"))) # multiply by the number of month days
+
+ET_to_monthly<- ET_to_daily %>%
+  group_by(rDate_m = format(rDate_d, "%Y-%m")) %>% # group by month
+  summarise_at(c("ET"), sum, na.rm = TRUE) %>% # calc the sum for all days in a month
+  mutate(date=as.Date.character(timeLastDayInMonth(paste(rDate_m,'01',sep = "-"))))
+
+GPP_ET_WUE_to_monthly<- GPP_to_monthly %>% 
+  left_join(.,ET_to_monthly,by = c("rDate_m" = "rDate_m")) %>% 
+  mutate(WUE = GPP_gC/ET) %>%
+  select(-rDate_m,-date.y) %>% 
+  pivot_longer(!date.x, names_to = "variable", values_to = "value")
+
+ggplot(GPP_ET_WUE_to_monthly,
+       aes(x = as.factor(date.x), y = value, fill = variable)) +
+  geom_bar(stat="identity") + 
+  labs(
+    title = "GPP, ET and WUE Variation at Monthly Scale",
+    subtitle = "Series 2018-2019 from the experimental site Majadas del Tietar",
+    x = "Time (month)",
+    caption = "Data Source: MPI-BG\\BGI."
+  ) +  # title and caption
+  scale_fill_discrete(name = 'Variables', labels = fill_labels) +
+  scale_x_discrete(labels = rep(m_abb$abb,2)) +
+  theme_bw() + 
+  facet_wrap(~ variable,scales = "free_y",ncol = 1,  strip.position = "left", 
+             labeller = as_labeller(c(ET = "ET (kg H2O m-2 mon-1)", GPP_gC = "GPP (gC m−2 mon−1)", 
+                                      WUE = "WUE (gC kg H2O−1 mon-1)") ) ) +
+  ylab(NULL) +
+  theme(strip.background = element_blank(), strip.placement = "outside")
+
+```
+
+## 7 NDVI links
+
+The figure below shows the behavior of daily NDVI measurements of trees and grass classes on the site.
+
+```{r ndvi_full, fig.width=9, fig.height=10, echo=FALSE}
+
+NDVI_long<- daily %>% 
+  pivot_longer(!date, names_to = "variable", values_to = "value")
+
+aoi <- data.frame(
+  x0 = as.Date(c("2018-11-04", "2020-05-10")) ,
+  y0 = c(0.3087811, 0.9141278),
+  r = c(1,1)
+)
+
+ggplot(NDVI_long, aes(x = date, y = value, col = variable)) +
+  geom_line() +
+  labs(
+    title = "Daily NDVI Measuments of Tree and Grass",
+    subtitle = "Series 2015-2020 from the experimental site Majadas del Tietar",
+    y = "NDVI ()",
+    x = "Time (day)",
+    caption = "Data Source: MPI-BG\\BGI."
+  ) +  # title and caption
+  # scale_x_discrete(breaks = unique(HHly_to_diurnal$rDate)[seq(1,48,4)]) +
+  # scale_color_gradientn(colours = rev(matlab.like2(5)), name = 'GPP') +
+  scale_color_discrete(name = 'Variables', labels = fill_labels) +
+  theme_bw() + 
+  facet_wrap(~ variable,ncol = 1) +
+  theme(strip.background = element_blank(),
+        strip.text.x = element_blank())
+
+```
+
+The NDVI values for the tree layer showed little variation seasonally and interannually. This is due to local plant species of the evergreen Mediterranean type that remains green and functional through more than one growing season. On the other hand, the grass area showed high seasonal variation and this behavior is probably mainly a reflection of precipitation variation and other climatological variables.
+
+The dataset of daily NDVI measurements in trees and grass was joined with the GPP and ET data for analysis.
+
+
+
+```{r ndvi_join, fig.width=9, fig.height=10, echo=FALSE}
+
+NDVI_GPP_ET<- GPP_to_daily %>% 
+  left_join(.,ET_to_daily,by = c("rDate_d" = "rDate_d")) %>% 
+  mutate(WUE = GPP_gC/ET) %>%
+  select(-GPP,-WUE) %>% 
+  left_join(.,daily,by = c("rDate_d" = "date")) %>% 
+  pivot_longer(!rDate_d, names_to = "variable", values_to = "value")
+
+ggplot(NDVI_GPP_ET, aes(x = rDate_d, y = value, col = variable)) +
+  geom_line() +
+  labs(
+    title = "Daily Variation of GPP, ET and NDVI Variables",
+    subtitle = "Series 2018-2019 from the experimental site Majadas del Tietar",
+    y = "GPP (mmol H2O m-2 s-1)",
+    x = "Time (day)",
+    caption = "Data Source: MPI-BG\\BGI."
+  ) +  # title and caption
+  # scale_x_discrete(breaks = unique(HHly_to_diurnal$rDate)[seq(1,48,4)]) +
+  # scale_color_gradientn(colours = rev(matlab.like2(5)), name = 'GPP') +
+  scale_color_discrete(name = 'Variables', labels = fill_labels) +
+  theme_bw() + 
+  facet_wrap(~ variable,scales = "free_y",ncol = 1,  strip.position = "left", 
+             labeller = as_labeller(c(ET = "ET (kg H2O m-2 hour-1)", GPP_gC = "GPP (gC m−2 day−1)", 
+                                      WUE = "WUE (gC kg H2O−1 m-1)", Cam_NDVI_G = "NDVI ()", Cam_NDVI_T = "NDVI ()"))) +
+  ylab(NULL) +
+  theme(strip.background = element_blank(), strip.placement = "outside")
+
+```
+
+GPP and NDVI grass showed a high correlation throughout the analyzed series. This may mean that the ecosystem's GPP may be more strongly related to the grassland layer. The figure below presents a correlation matrix for the analyzed variables.
+
+```{r corr_plot, fig.width=6, fig.height=6, echo=FALSE}
+
+# NDVI_GPP_ET_WUE<- GPP_to_daily %>% 
+#   left_join(.,ET_to_daily,by = c("rDate_d" = "rDate_d")) %>% 
+#   select(-GPP) %>% 
+#   mutate(WUE = GPP_gC/ET) %>%
+#   left_join(.,daily,by = c("rDate_d" = "date")) %>% 
+#   select(-rDate_d)
+
+NDVI_GPP_ET_WUE<- WUE_out %>% 
+  select(-GPP) %>% 
+  left_join(.,daily,by = c("rDate_d" = "date")) %>% 
+  select(-rDate_d)
+
+cor_data<- NDVI_GPP_ET_WUE %>% 
+  cor()
+
+corrplot(
+  cor_data,
+  method = "color",
+  type = "lower",
+  order = "hclust",
+  addCoef.col = "black",
+  tl.col = "black",
+  tl.srt = 45,
+  sig.level = 0.05,
+  insig = "pch",
+  addrect = 3,
+  diag = FALSE )  
+
+```
+
+## 8 Annual Fluxes for the Ecosystem
+
+The table below presents the annual values for GPP (g C m−2 year−1), ET (ET kg H2O m−2 year−1) and WUE (g C kg H2O−1) in the two years analyzed. The values presented are consistent with those reported in other works, for example, in the work carried out by El-Madany et. al. (2021)[2].
+
+```{r annual, echo=FALSE}
+
+GPP_to_annual <-  GPP_to_monthly %>%
+  group_by(date = format(date, "%Y")) %>% 
+  summarise_at(c("GPP_gC"), mean, na.rm = TRUE) %>% 
+  mutate(GPP_gC = GPP_gC * 12)
+
+ET_to_annual<- ET_to_monthly %>%
+  group_by(date = format(date, "%Y")) %>% 
+  summarise_at(c("ET"), sum, na.rm = TRUE)# calc the sum for all days in a month
+
+GPP_ET_WUE_to_annual<- GPP_to_annual %>% 
+  left_join(.,ET_to_annual,by = c("date" = "date")) %>% 
+  mutate(WUE = GPP_gC/ET) 
+
+knitr::kable(
+    GPP_ET_WUE_to_annual
+  ,
+  caption = 'Annual Fluxes', booktabs = TRUE
+)
+
+```
+
+
+## References
+
+[1] Gómez-Giráldez, P.J.; Pérez-Palazón, M.J.; Polo, M.J.; González-Dugo, M.P. Monitoring Grass Phenology and Hydrological Dynamics of an Oak–Grass Savanna Ecosystem Using Sentinel-2 and Terrestrial Photography. Remote Sens. 2020, 12, 600. https://doi.org/10.3390/rs12040600
+
+[2] El-Madany, T. S., Reichstein, M., Carrara, A., Martín, M. P., Moreno, G., Gonzalez-Cascon, R., et al. (2021). How nitrogen and phosphorus availability change water use efficiency in a Mediterranean savanna ecosystem. Journal of Geophysical Research: Biogeosciences, 126, e2020JG006005. https://doi.org/10.1029/2020JG006005
+
+
+
+
+
